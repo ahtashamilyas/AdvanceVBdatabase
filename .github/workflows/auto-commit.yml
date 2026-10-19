@@ -1,0 +1,57 @@
+name: Daily CV Paper Log
+
+on:
+  schedule:
+    - cron: '0 18 * * 1-5'   # Mon-Fri only, 18:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  log:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set git identity (your account)
+        run: |
+          git config user.name "${{ github.repository_owner }}"
+          git config user.email "${{ github.repository_owner_id }}+${{ github.repository_owner }}@users.noreply.github.com"
+
+      - name: Add 1-15 new papers, one commit each
+        run: |
+          N=$(( (RANDOM % 15) + 1 ))
+          echo "Target: $N commits"
+          python3 - "$N" <<'EOF'
+          import sys, os, subprocess, urllib.request
+          import xml.etree.ElementTree as ET
+
+          n = int(sys.argv[1])
+          url = ("http://export.arxiv.org/api/query?search_query=cat:cs.CV"
+                 "&sortBy=submittedDate&sortOrder=descending&max_results=50")
+          ns = {"a": "http://www.w3.org/2005/Atom"}
+          root = ET.fromstring(urllib.request.urlopen(url, timeout=30).read())
+
+          os.makedirs("papers", exist_ok=True)
+          done = 0
+          for e in root.findall("a:entry", ns):
+              if done >= n:
+                  break
+              link = e.find("a:id", ns).text
+              aid = link.rsplit("/abs/", 1)[-1].replace("/", "_")
+              path = f"papers/{aid}.md"
+              if os.path.exists(path):
+                  continue
+              title = " ".join(e.find("a:title", ns).text.split())
+              summary = " ".join(e.find("a:summary", ns).text.split())
+              with open(path, "w") as f:
+                  f.write(f"# {title}\n\n{link}\n\n{summary}\n")
+              subprocess.run(["git", "add", path], check=True)
+              subprocess.run(["git", "commit", "-m", f"Add paper: {title[:60]}"], check=True)
+              done += 1
+          print(f"Committed {done} papers")
+          EOF
+
+      - name: Push
+        run: git push
