@@ -1,4 +1,4 @@
-name: Daily CV Paper Log
+name: 3DGS Paper Log
 
 on:
   schedule:
@@ -24,32 +24,72 @@ jobs:
           N=$(( (RANDOM % 15) + 1 ))
           echo "Target: $N commits"
           python3 - "$N" <<'EOF'
-          import sys, os, subprocess, urllib.request
+          import sys, os, time, subprocess, urllib.request, urllib.parse
           import xml.etree.ElementTree as ET
 
           n = int(sys.argv[1])
-          url = ("http://export.arxiv.org/api/query?search_query=cat:cs.CV"
-                 "&sortBy=submittedDate&sortOrder=descending&max_results=50")
-          ns = {"a": "http://www.w3.org/2005/Atom"}
-          root = ET.fromstring(urllib.request.urlopen(url, timeout=30).read())
+          GS = 'abs:"Gaussian Splatting"'
 
-          os.makedirs("papers", exist_ok=True)
+          # (folder, query, sort, max_results), in priority order
+          BUCKETS = [
+              ("core",
+               'ti:PGSR OR ti:GARField OR ti:"Segment Any 3D Gaussians" '
+               'OR ti:"Gaussian Grouping" OR ti:LangSplat OR ti:"Feature 3DGS"',
+               "relevance", 20),
+              ("segmentation",
+               f'{GS} AND (abs:segmentation OR abs:segment OR abs:grouping '
+               'OR abs:"feature field" OR abs:"language field" OR abs:"open-vocabulary" '
+               'OR abs:"instance")',
+               "submittedDate", 50),
+              ("geometry",
+               f'{GS} AND (abs:"surface reconstruction" OR abs:planar '
+               'OR abs:"multi-view geometric" OR abs:"depth" OR abs:mesh)',
+               "submittedDate", 50),
+              ("general", GS, "submittedDate", 50),
+          ]
+
+          ns = {"a": "http://www.w3.org/2005/Atom"}
           done = 0
-          for e in root.findall("a:entry", ns):
+
+          def fetch(query, sort, maxr):
+              params = urllib.parse.urlencode({
+                  "search_query": query, "sortBy": sort,
+                  "sortOrder": "descending", "max_results": maxr})
+              url = "https://export.arxiv.org/api/query?" + params
+              return ET.fromstring(urllib.request.urlopen(url, timeout=30).read())
+
+          for folder, query, sort, maxr in BUCKETS:
               if done >= n:
                   break
-              link = e.find("a:id", ns).text
-              aid = link.rsplit("/abs/", 1)[-1].replace("/", "_")
-              path = f"papers/{aid}.md"
-              if os.path.exists(path):
+              try:
+                  root = fetch(query, sort, maxr)
+              except Exception as ex:
+                  print(f"[{folder}] fetch failed: {ex}")
                   continue
-              title = " ".join(e.find("a:title", ns).text.split())
-              summary = " ".join(e.find("a:summary", ns).text.split())
-              with open(path, "w") as f:
-                  f.write(f"# {title}\n\n{link}\n\n{summary}\n")
-              subprocess.run(["git", "add", path], check=True)
-              subprocess.run(["git", "commit", "-m", f"Add paper: {title[:60]}"], check=True)
-              done += 1
+              time.sleep(3)  # arXiv API etiquette
+              os.makedirs(f"papers/{folder}", exist_ok=True)
+              for e in root.findall("a:entry", ns):
+                  if done >= n:
+                      break
+                  link = e.find("a:id", ns).text
+                  aid = link.rsplit("/abs/", 1)[-1].replace("/", "_")
+                  # skip if already logged in ANY folder
+                  if subprocess.run(["bash", "-c", f"ls papers/*/{aid}.md"],
+                                    capture_output=True).returncode == 0:
+                      continue
+                  title = " ".join(e.find("a:title", ns).text.split())
+                  summary = " ".join(e.find("a:summary", ns).text.split())
+                  authors = ", ".join(a.find("a:name", ns).text
+                                      for a in e.findall("a:author", ns))
+                  date = e.find("a:published", ns).text[:10]
+                  path = f"papers/{folder}/{aid}.md"
+                  with open(path, "w") as f:
+                      f.write(f"# {title}\n\n- Date: {date}\n- Authors: {authors}\n"
+                              f"- Link: {link}\n- Tag: {folder}\n\n{summary}\n")
+                  subprocess.run(["git", "add", path], check=True)
+                  subprocess.run(["git", "commit", "-m",
+                                  f"Add [{folder}] paper: {title[:60]}"], check=True)
+                  done += 1
           print(f"Committed {done} papers")
           EOF
 
